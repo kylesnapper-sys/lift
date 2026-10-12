@@ -129,6 +129,12 @@ table.tg input{width:100%;height:44px;border-radius:10px;border:1px solid var(--
 .wkhd{font-weight:800;margin:18px 0 6px;display:flex;justify-content:space-between;align-items:center}
 .muted{color:var(--mut);font-size:15px}
 .hidden{display:none!important}
+.lastline{color:var(--mut);font-size:15px;margin:0 2px 6px;line-height:1.35}
+.lastline.sug{color:var(--ok);font-weight:700} .lastline.rep{color:var(--warn);font-weight:700}
+.fld input::placeholder{color:#59616e;font-weight:600}
+.ex.custom{border-style:dashed}
+.btn.addex{height:60px;border:2px dashed var(--line);background:transparent;color:var(--acc2)}
+.histpick{width:100%;height:52px;margin-top:10px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--text);font-size:17px;padding:0 12px}
 .syncline{color:var(--mut);font-size:14px;text-align:center;margin:-2px 0 12px}
 .syncbox{background:var(--card2);border-radius:12px;padding:12px;font-size:16px;font-weight:700}
 .syncbox.ok,.syncline.ok{color:var(--ok)} .syncbox.err,.syncline.err{color:var(--warn)}
@@ -152,7 +158,7 @@ table.tg input{width:100%;height:44px;border-radius:10px;border:1px solid var(--
 const START = [2026, 9, 12];           // Mon Oct 12 2026 (month 0-based)
 const NWEEKS = 12;
 const KEY = 'q4lift.v1';
-const APP_VERSION = '2026.10.11-sync';
+const APP_VERSION = '2026.10.12-sets';
 
 const PHASES = w => w===1?{name:'Re-entry',cls:'acc',desc:'Ease back in after vacation and find working weights. Accessories: 2 sets.'}
   : w<=6?{name:'Build',cls:'acc',desc:'RPE 7 rising to 8 by week 6.'+(w>=5?' Flat bench and overhead press are in (if shoulders feel good).':'')}
@@ -237,7 +243,7 @@ const fmt = n=>{const d=new Date(n*864e5);return MON[d.getUTCMonth()]+' '+d.getU
 /* ================= STATE ================= */
 let S;
 try{ S = JSON.parse(localStorage.getItem(KEY)) || {}; }catch(e){ S = {}; }
-S.days = S.days || {}; S.targets = S.targets || {};
+S.days = S.days || {}; S.targets = S.targets || {}; S.custom = S.custom || {};  // custom: {A:[{id,name,added}],...}
 let saveT;
 function save(){ clearTimeout(saveT); saveT=setTimeout(()=>localStorage.setItem(KEY, JSON.stringify(S)),150); Sync.touch(); }
 function commit(){ saveNow(); Sync.touch(); }
@@ -329,6 +335,8 @@ function renderToday(){
       h += `<div class="chips" style="margin:4px 2px 6px"><button class="chip ${variant!=='board'?'on':''}" data-act="variant" data-v="">Flat bench</button><button class="chip ${variant==='board'?'on':''}" data-act="variant" data-v="board">Board press (shoulder flare)</button></div>`;
     }
     exs.forEach(ex=>{ h += exCard(ex, d, n, w); });
+    customFor(lift, k, d).forEach(ex=>{ h += exCard(ex, d, n, w); });
+    h += addExForm(lift);
   } else if(inProg){
     h += `<div class="card rest">${wd===0?`<div class="big">😴</div><h2>Sunday: fully off</h2><p>No lifting, no BJJ. Recover.</p>`
       :`<div class="big">🥋</div><h2>BJJ tonight</h2><p>No lifting today. Good day for home PT and tissue work.</p>`}</div>`;
@@ -364,39 +372,98 @@ function bwNote(n, bw){
   return s;
 }
 
+function setCount(ex, w){
+  if(ex.main) return Math.max(1, parseInt(target(w, ex.slot).sets)||3);
+  if(ex.custom) return 3;
+  const m=parseInt(ex.sx)||3;
+  if(w===1) return 2;
+  if(w===7||w===11) return Math.ceil(m/2);
+  return m;
+}
+function lastLine(ex, last, n){
+  const sets=last.e.sets.filter(s=>s.w!==''||s.r!=='');
+  const ago=n-fromKey(last.k);
+  const lbl = ago===7 ? 'Last week' : `Last time (${fmt(fromKey(last.k))})`;
+  const unit=ex.repLbl?' '+ex.repLbl:'';
+  const parts=sets.map((s,i)=>{
+    const w = (s.w===''||ex.noW) ? '' : (i===0? `${s.w} lb × ` : `${s.w} × `);
+    return `${w}${s.r||'?'}${unit}${ex.main&&s.rpe?' @'+s.rpe:''}`;
+  });
+  return `${lbl}: ${parts.join(', ')}`;
+}
 function exCard(ex, d, n, w){
   const e = d.ex[ex.id] || {sets:[],done:false};
   const t = ex.main ? target(w, ex.slot) : null;
-  const tgtTxt = ex.main ? `${t.sets} × ${t.reps} @ RPE ${t.rpe}` : (w===1? ex.sx.replace(/^\d/, '2')+' (wk 1: 2 sets)' : ex.sx);
-  const open = view.open[ex.id] ?? (ex.main && !e.done);
+  const cnt = setCount(ex, w);
+  const tgtTxt = ex.main ? `${t.sets} × ${t.reps} @ RPE ${t.rpe}`
+    : ex.custom ? 'Your exercise'
+    : (w===1? ex.sx.replace(/^\d/, '2')+' (wk 1: 2 sets)' : (w===7||w===11)? ex.sx.replace(/^\d/, String(cnt))+' (deload)' : ex.sx);
+  const open = view.open[ex.id] ?? !e.done;
   const last = lastSession(ex.id, n);
-  let h = `<div class="ex ${ex.main?'main':''} ${e.done?'done':''}">
+  const lastSets = last ? last.e.sets.filter(s=>s.w!==''||s.r!=='') : [];
+  let h = `<div class="ex ${ex.main?'main':''} ${ex.custom?'custom':''} ${e.done?'done':''}">
     <div class="exhead"><span class="tag">${ex.tag}</span>
-      <button class="exname" style="text-align:left" data-act="toggle" data-id="${ex.id}"><b>${ex.name}</b><span>${tgtTxt}${ex.main?' · editable':''}</span>${(t&&t.note)||ex.note?`<small>${esc([ex.note,t&&t.note].filter(Boolean).join(' · '))}</small>`:''}
-      ${!open&&e.sets.length?`<small>${e.sets.map(s=>setStr(s,ex.main)).join(', ')}</small>`:''}</button>
+      <button class="exname" style="text-align:left" data-act="toggle" data-id="${ex.id}"><b>${esc(ex.name)}</b><span>${tgtTxt}${ex.main?' · editable':''}</span>${(t&&t.note)||ex.note?`<small>${esc([ex.note,t&&t.note].filter(Boolean).join(' · '))}</small>`:''}
+      ${!open&&e.sets.some(s=>s.w!==''||s.r!=='')?`<small>Today: ${e.sets.filter(s=>s.w!==''||s.r!=='').map(s=>setStr(s,ex.main)).join(', ')}</small>`:''}</button>
       <button class="chk ${e.done?'on':''}" data-act="done" data-id="${ex.id}" aria-label="Mark done">✓</button></div>`;
   if(open){
     h += `<div class="exbody">`;
     if(last){
-      h += `<div class="hint">Last (${fmt(fromKey(last.k))}): <b>${last.e.sets.filter(s=>s.w!==''||s.r!=='').map(s=>setStr(s,ex.main)).join(', ')}</b>`;
-      if(ex.main){ const sg=suggestion(ex,last); if(sg) h += `<br><span class="${sg.cls}">${sg.txt}</span>`; }
-      h += `</div>`;
-    } else if(ex.main){
-      h += `<div class="hint">No previous log yet. ${ex.id==='A1'&&w<=2?'Plan: floor press around 195–205 for 4×6 in week 2 (RPE 7).':ex.id==='C1-bench'?'Plan: start at a weight that feels like RPE 7.':'Find a working weight at the target RPE.'}</div>`;
+      h += `<div class="lastline">${esc(lastLine(ex, last, n))}</div>`;
+      if(ex.main){ const sg=suggestion(ex,last); if(sg) h += `<div class="lastline ${sg.cls}">${sg.txt}</div>`; }
+    } else {
+      h += `<div class="lastline">${ex.main ? (ex.id==='A1'&&w<=2?'No log yet. Plan: floor press around 195–205 for 4×6 in week 2 (RPE 7).':ex.id==='C1-bench'?'No log yet. Start at a weight that feels like RPE 7.':'No log yet. Find a working weight at the target RPE.') : 'No log yet. Enter what you lift; next time it shows here.'}</div>`;
     }
-    if(ex.main) h += `<div class="hint" style="font-size:13px">Rule: every set hits target reps at/below target RPE → +${ex.inc} lb next week. Last set 1+ RPE high → repeat weight.</div>`;
-    else if(!last) h += `<div class="hint" style="font-size:13px">Double progression: reach the top of the rep range on all sets, then add a little weight.</div>`;
-    e.sets.forEach((s,i)=>{
+    const rows = Math.max(cnt, e.sets.length);
+    for(let i=0;i<rows;i++){
+      const s = e.sets[i] || {w:'',r:'',rpe:''};
+      const ph = lastSets[i] || lastSets[lastSets.length-1] || {};
+      const nm = ex.custom ? ` data-name="${esc(ex.name)}"` : '';
       h += `<div class="setrow"><span class="setno">${i+1}</span>
-        ${ex.noW?'':`<div class="fld"><label>lb</label><input type="number" inputmode="decimal" step="2.5" data-f="w" data-id="${ex.id}" data-i="${i}" value="${esc(s.w)}"></div>`}
-        <div class="fld"><label>${ex.repLbl||'reps'}</label><input type="number" inputmode="numeric" data-f="r" data-id="${ex.id}" data-i="${i}" value="${esc(s.r)}"></div>
-        ${ex.main?`<div class="fld"><label>RPE</label><input type="number" inputmode="decimal" step="0.5" min="5" max="10" data-f="rpe" data-id="${ex.id}" data-i="${i}" value="${esc(s.rpe)}"></div>`:''}
-        <button class="del" data-act="delset" data-id="${ex.id}" data-i="${i}" aria-label="Delete set">✕</button></div>`;
-    });
-    h += `<div class="btnrow"><button class="btn" data-act="addset" data-id="${ex.id}" data-main="${ex.main?1:0}">+ Add set</button>
-      <button class="btn ${e.done?'':'ok'}" data-act="done" data-id="${ex.id}">${e.done?'Undo done':'Done ✓'}</button></div></div>`;
+        ${ex.noW?'':`<div class="fld"><label>lb</label><input type="number" inputmode="decimal" step="2.5" data-f="w" data-id="${ex.id}" data-i="${i}"${nm} value="${esc(s.w)}" placeholder="${esc(ph.w||'')}"></div>`}
+        <div class="fld"><label>${ex.repLbl||'reps'}</label><input type="number" inputmode="numeric" data-f="r" data-id="${ex.id}" data-i="${i}"${nm} value="${esc(s.r)}" placeholder="${esc(ph.r||'')}"></div>
+        ${ex.main?`<div class="fld"><label>RPE</label><input type="number" inputmode="decimal" step="0.5" min="5" max="10" data-f="rpe" data-id="${ex.id}" data-i="${i}" value="${esc(s.rpe)}" placeholder="${esc(ph.rpe||'')}"></div>`:''}
+        ${i<e.sets.length?`<button class="del" data-act="delset" data-id="${ex.id}" data-i="${i}" aria-label="Clear set">✕</button>`:'<span class="del"></span>'}</div>`;
+    }
+    if(ex.main) h += `<div class="lastline" style="font-size:13px">Rule: every set hits target reps at/below target RPE → +${ex.inc} lb next week. Last set 1+ RPE high → repeat weight.</div>`;
+    else if(!ex.custom) h += `<div class="lastline" style="font-size:13px">Gray numbers = last time. Hit the top of the rep range on all sets → add a little weight.</div>`;
+    else h += `<div class="lastline" style="font-size:13px">Gray numbers = last time.</div>`;
+    h += `<div class="btnrow"><button class="btn" data-act="addset" data-id="${ex.id}"${ex.custom?` data-name="${esc(ex.name)}"`:''}>+ Add set</button>
+      <button class="btn ${e.done?'':'ok'}" data-act="done" data-id="${ex.id}">${e.done?'Undo done':'Done ✓'}</button></div>
+      ${ex.custom?`<div class="btnrow"><button class="btn small" data-act="rmEx" data-id="${ex.id}" data-name="${esc(ex.name)}">Remove from Day ${ex.day}</button></div>`:''}</div>`;
   }
   return h+`</div>`;
+}
+
+/* ---- custom exercises ---- */
+const slug = s=>'x-'+String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40);
+function customFor(lift, k, d){
+  const list=(S.custom[lift]||[]).filter(c=>!c.added||c.added<=k);
+  const ids=new Set(list.map(c=>c.id));
+  Object.keys(d.ex||{}).forEach(id=>{ if(id.startsWith('x-') && !ids.has(id)){ const e=d.ex[id]; if(e&&(e.done||(e.sets||[]).some(s=>s.w!==''||s.r!==''))){ list.push({id, name:exName(id)}); ids.add(id);} } });
+  return list.map(c=>({id:c.id, name:c.name, tag:'+', custom:true, day:lift}));
+}
+function exName(id){
+  if(id.startsWith('x-')){
+    for(const L of Object.keys(S.custom)) for(const c of S.custom[L]) if(c.id===id) return c.name;
+    for(const k of Object.keys(S.days)){ const e=S.days[k].ex&&S.days[k].ex[id]; if(e&&e.name) return e.name; }
+    return id.slice(2).replace(/-/g,' ');
+  }
+  if(!exName.M){ exName.M={}; ['A','B','C','D'].forEach(dy=>[1,5].forEach(w=>['','board'].forEach(v=>workout(dy,w,v).forEach(e=>exName.M[e.id]=e.name)))); }
+  return exName.M[id]||id;
+}
+function knownCustomNames(){
+  const s=new Set(); Object.values(S.custom).forEach(l=>l.forEach(c=>s.add(c.name)));
+  Object.values(S.days).forEach(d=>Object.entries(d.ex||{}).forEach(([id,e])=>{ if(id.startsWith('x-')) s.add(e.name||exName(id)); }));
+  return [...s].sort();
+}
+function addExForm(lift){
+  if(!view.addEx) return `<div class="btnrow"><button class="btn addex" data-act="addExOpen">+ Add exercise</button></div>`;
+  return `<div class="card"><b>Add an exercise to Day ${lift}</b>
+    <p class="muted" style="margin:6px 0 10px">It'll show up on every Day ${lift} from now on, with last time's numbers. Remove it any time.</p>
+    <input id="newEx" class="syncinput" list="exNames" autocomplete="off" placeholder="e.g. Leg extension">
+    <datalist id="exNames">${knownCustomNames().map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
+    <div class="btnrow"><button class="btn" data-act="addExCancel">Cancel</button><button class="btn pri" data-act="addExSave">Add</button></div></div>`;
 }
 
 function weekSummary(n){
@@ -427,18 +494,31 @@ function weekSummary(n){
     <div class="stat"><b>${total?Math.round(100*hit/total):0}%</b><small>checks so far</small></div></div>${g}</div>`;
 }
 
+function loggedExercises(){
+  const seen=new Map();
+  Object.keys(S.days).sort().forEach(k=>Object.entries(S.days[k].ex||{}).forEach(([id,e])=>{ if((e.sets||[]).some(s=>s.w!==''||s.r!=='')) seen.set(id, exName(id)); }));
+  return [...seen.entries()].sort((a,b)=>a[1].localeCompare(b[1]));
+}
 function renderHistory(){
   const id=view.histLift;
   let h = `<header class="top"><div class="dow" style="padding:8px 4px">History</div></header>
-    <div class="chips">${HIST_LIFTS.map(([k,l])=>`<button class="chip ${k===id?'on':''}" data-act="hist" data-id="${k}">${l}</button>`).join('')}</div>`;
+    <div class="chips">${HIST_LIFTS.map(([k,l])=>`<button class="chip ${k===id?'on':''}" data-act="hist" data-id="${k}">${l}</button>`).join('')}</div>
+    <select id="histPick" class="histpick"><option value="">Any exercise…</option>${loggedExercises().map(([x,nm])=>`<option value="${esc(x)}" ${x===id?'selected':''}>${esc(nm)}</option>`).join('')}</select>
+    ${id!=='BW'?`<div class="dow" style="font-size:22px;margin:12px 4px 0">${esc(exName(id))}</div>`:''}`;
   const keys=Object.keys(S.days).sort();
   let pts=[], rows=[];
   if(id==='BW'){
     keys.forEach(k=>{ const v=parseFloat(S.days[k].bw); if(!isNaN(v)){ pts.push(v); rows.push(`<div class="hist"><div class="d"><span>${DOW[wdOf(fromKey(k))].slice(0,3)} ${fmt(fromKey(k))}</span><span>${weekOf(fromKey(k))>=1&&weekOf(fromKey(k))<=12?'Wk '+weekOf(fromKey(k)):''}</span></div><div class="s">${v} lb ${v>=216?'<span class="pill" style="color:var(--warn)">≥216</span>':''}</div></div>`);} });
   } else {
-    keys.forEach(k=>{ const e=S.days[k].ex&&S.days[k].ex[id]; if(!e) return; const sets=e.sets.filter(s=>s.w!==''&&s.r!==''); if(!sets.length) return;
+    const isMain=/^(A1|B1|C1-board|C1-bench|D1|A3a-ohp)$/.test(id);
+    keys.forEach(k=>{ const e=S.days[k].ex&&S.days[k].ex[id]; if(!e) return; const sets=(e.sets||[]).filter(s=>s.r!==''); if(!sets.length) return;
+      const n=fromKey(k), w=weekOf(n);
+      if(!isMain){ const top=Math.max(...sets.map(s=>parseFloat(s.w)||0)); if(top) pts.push(top);
+        rows.push(`<div class="hist"><div class="d"><span>${DOW[wdOf(n)].slice(0,3)} ${fmt(n)}</span><span>${w>=1&&w<=12?'Wk '+w:''}</span></div>
+          <div class="s">${sets.map(s=>(s.w!==''?`${esc(s.w)} × `:'')+esc(s.r)).join(', ')}</div>${top?`<div class="e">Top ${top} lb</div>`:''}</div>`); return; }
+      if(!sets.some(s=>s.w!=='')) return;
       const best=Math.max(...sets.map(e1rm)); const top=sets.reduce((a,b)=>parseFloat(b.w)>parseFloat(a.w)?b:a);
-      pts.push(best); const n=fromKey(k), w=weekOf(n);
+      pts.push(best);
       rows.push(`<div class="hist"><div class="d"><span>${DOW[wdOf(n)].slice(0,3)} ${fmt(n)}</span><span>${w>=1&&w<=12?'Wk '+w+' · '+PHASES(w).name:''}</span></div>
         <div class="s">${sets.map(s=>setStr(s,true)).join(', ')}</div><div class="e">Top ${top.w} × ${top.r}${best?` · est. 1RM ≈ ${Math.round(best)}`:''}</div></div>`); });
   }
@@ -447,7 +527,7 @@ function renderHistory(){
     const mn=Math.min(...pts), mx=Math.max(...pts), rg=(mx-mn)||1, W=500, H=110;
     const xy=pts.map((v,i)=>[10+i*(W-20)/(pts.length-1), H-10-(v-mn)/rg*(H-30)]);
     h += `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline fill="none" stroke="#ff8a3d" stroke-width="3" points="${xy.map(p=>p.join(',')).join(' ')}"/>${xy.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="4" fill="#ffb27a"/>`).join('')}</svg>
-      <div class="muted" style="display:flex;justify-content:space-between"><span>${id==='BW'?'Bodyweight':'Best est. 1RM per session'}</span><span>${Math.round(mn)}–${Math.round(mx)}</span></div>`;
+      <div class="muted" style="display:flex;justify-content:space-between"><span>${id==='BW'?'Bodyweight':/^(A1|B1|C1-board|C1-bench|D1|A3a-ohp)$/.test(id)?'Best est. 1RM per session':'Top weight per session'}</span><span>${Math.round(mn)}–${Math.round(mx)}</span></div>`;
   }
   h += rows.length? rows.reverse().join('') : `<p class="muted">Nothing logged yet. Entries appear here after you log sets on the Today screen.</p>`;
   app.innerHTML = h+`</div>`;
@@ -497,25 +577,37 @@ app.addEventListener('click', e=>{
   const b=e.target.closest('[data-act]'); if(!b) return;
   const act=b.dataset.act, k=keyOf(view.n);
   switch(act){
-    case 'prev': view.n--; view.open={}; render(); break;
-    case 'next': view.n++; view.open={}; render(); break;
+    case 'prev': view.n--; view.open={}; view.addEx=false; render(); break;
+    case 'next': view.n++; view.open={}; view.addEx=false; render(); break;
     case 'today': view.n=todayN(); view.open={}; render(); break;
     case 'goto': view.n=+b.dataset.n; view.open={}; render(); break;
-    case 'toggle': { const d=peek(k), id=b.dataset.id; const cur = view.open[id] ?? (b.closest('.ex').classList.contains('main') && !((d&&d.ex[id])||{}).done);
+    case 'toggle': { const d=peek(k), id=b.dataset.id; const cur = view.open[id] ?? !((d&&d.ex[id])||{}).done;
       view.open[id]=!cur; render(); break; }
     case 'done': { const d=D(k), id=b.dataset.id; const e=d.ex[id]||(d.ex[id]={sets:[],done:false}); e.done=!e.done;
       if(e.done){ view.open[id]=false; d.checks.trained=true; } save(); render(); break; }
-    case 'addset': { const d=D(k), id=b.dataset.id; const e=d.ex[id]||(d.ex[id]={sets:[],done:false});
-      let prev = e.sets[e.sets.length-1];
-      if(!prev){ const l=lastSession(id, view.n); if(l){ const ls=l.e.sets.filter(s=>s.w!==''); prev = ls[0] ? {w:ls[0].w, r:'', rpe:''} : null; } }
-      e.sets.push({w:prev?prev.w:'', r:prev?prev.r:'', rpe:''}); view.open[id]=true; save(); render();
-      const ins=app.querySelectorAll(`input[data-id="${id}"][data-i="${e.sets.length-1}"]`); const tgt=[...ins].find(i=>i.value==='')||ins[0]; if(tgt) tgt.focus({preventScroll:true});
+    case 'addset': { const d=D(k), id=b.dataset.id; const e=d.ex[id]||(d.ex[id]={sets:[],done:false}); if(b.dataset.name) e.name=b.dataset.name;
+      const visible=app.querySelectorAll(`input[data-id="${id}"][data-f="r"]`).length;
+      while(e.sets.length<visible) e.sets.push({w:'',r:'',rpe:''});
+      e.sets.push({w:'',r:'',rpe:''}); view.open[id]=true; save(); render();
+      const ins=app.querySelectorAll(`input[data-id="${id}"][data-i="${e.sets.length-1}"]`); if(ins[0]) ins[0].focus({preventScroll:true});
       break; }
-    case 'delset': { const d=D(k), id=b.dataset.id; d.ex[id].sets.splice(+b.dataset.i,1); save(); render(); break; }
+    case 'delset': { const d=D(k), id=b.dataset.id; if(d.ex[id]) d.ex[id].sets.splice(+b.dataset.i,1); save(); render(); break; }
     case 'check': { const d=D(k), id=b.dataset.id; d.checks[id]=!d.checks[id]; save(); render(); break; }
     case 'prot': { const d=D(k); d.protein=Math.max(0,(d.protein||0)+(+b.dataset.v)); save(); render(); break; }
     case 'variant': { const d=D(k); d.variant=b.dataset.v; save(); render(); break; }
     case 'hist': view.histLift=b.dataset.id; render(); break;
+    case 'addExOpen': view.addEx=true; render(); setTimeout(()=>{ const i=document.getElementById('newEx'); if(i) i.focus(); },50); break;
+    case 'addExCancel': view.addEx=false; render(); break;
+    case 'addExSave': { const name=(document.getElementById('newEx').value||'').trim().replace(/\s+/g,' ').slice(0,60); if(!name) break;
+      const lift=SCHEDULE[wdOf(view.n)]; if(!lift) break; const id=slug(name); if(id==='x-') break;
+      const list=S.custom[lift]=S.custom[lift]||[]; const ex=list.find(c=>c.id===id);
+      if(!ex) list.push({id, name, added:k}); else if(ex.added>k) ex.added=k;
+      view.addEx=false; view.open[id]=true; commit(); render(); break; }
+    case 'rmEx': { const id=b.dataset.id, lift=SCHEDULE[wdOf(view.n)];
+      if(!confirm(`Stop showing "${b.dataset.name}" on Day ${lift}? Past logs stay in History.`)) break;
+      S.custom[lift]=(S.custom[lift]||[]).filter(c=>c.id!==id);
+      const d=peek(k); if(d&&d.ex[id]&&!(d.ex[id].sets||[]).some(s=>s.w!==''||s.r!=='')) delete d.ex[id];
+      commit(); render(); break; }
     case 'resetTargets': if(confirm('Reset all main-lift targets to the plan defaults?')){ S.targets={}; commit(); render(); } break;
     case 'export': doExport(); break;
     case 'syncNow': Sync.run(true); break;
@@ -530,12 +622,15 @@ app.addEventListener('click', e=>{
 let notesT;
 app.addEventListener('input', e=>{
   const el=e.target, k=keyOf(view.n);
-  if(el.dataset.f){ const d=D(k), id=el.dataset.id; const ex=d.ex[id]; if(ex&&ex.sets[+el.dataset.i]){ ex.sets[+el.dataset.i][el.dataset.f]=el.value; save(); } }
+  if(el.dataset.f){ const d=D(k), id=el.dataset.id, i=+el.dataset.i; const ex=d.ex[id]||(d.ex[id]={sets:[],done:false});
+    if(el.dataset.name) ex.name=el.dataset.name;
+    while(ex.sets.length<=i) ex.sets.push({w:'',r:'',rpe:''});
+    ex.sets[i][el.dataset.f]=el.value; save(); }
   else if(el.id==='notes'){ D(k).notes=el.value; const s=document.getElementById('saved'); s.textContent='Saving…'; clearTimeout(notesT); notesT=setTimeout(()=>{ commit(); s.textContent='Saved ✓'; },400); }
   else if(el.id==='bw'){ const d=D(k); d.bw=el.value; save(); document.getElementById('bwnote').innerHTML=bwNote(view.n, parseFloat(el.value)); el.closest('.ckrow').querySelector('.chk').classList.toggle('on', el.value!==''); }
   else if(el.dataset.tw){ const w=el.dataset.tw, s=el.dataset.ts; S.targets[w]=S.targets[w]||{}; S.targets[w][s]=Object.assign(target(+w,s),{[el.dataset.tf]:el.value}); save(); }
 });
-app.addEventListener('change', e=>{ if(e.target.id==='bw' || e.target.dataset.tw) { saveNow(); if(view.tab==='today') renderTodayKeepScroll(); } });
+app.addEventListener('change', e=>{ if(e.target.id==='histPick'){ if(e.target.value){ view.histLift=e.target.value; render(); } return; } if(e.target.id==='bw' || e.target.dataset.tw) { saveNow(); if(view.tab==='today') renderTodayKeepScroll(); } });
 function renderTodayKeepScroll(){ const y=scrollY; render(); scrollTo(0,y); }
 
 /* ================= BACKUP ================= */
@@ -599,7 +694,7 @@ const Sync = (()=>{
   let NAMES=null;
   function nameOf(id){
     if(!NAMES){ NAMES={}; ['A','B','C','D'].forEach(dy=>[1,5].forEach(w=>['','board'].forEach(v=>workout(dy,w,v).forEach(e=>NAMES[e.id]=e.name)))); }
-    return NAMES[id]||id;
+    return exName(id);
   }
   function payload(){
     const dates=Object.keys(S.days).filter(k=>/^\d{4}-\d{2}-\d{2}$/.test(k)).sort();
