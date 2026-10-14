@@ -129,6 +129,9 @@ table.tg input{width:100%;height:44px;border-radius:10px;border:1px solid var(--
 .wkhd{font-weight:800;margin:18px 0 6px;display:flex;justify-content:space-between;align-items:center}
 .muted{color:var(--mut);font-size:15px}
 .hidden{display:none!important}
+.movesheet{border-color:var(--acc)}
+.moveopt{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:64px;padding:10px 6px;border-bottom:1px solid var(--line);text-align:left}
+.moveopt b{font-size:19px} .moveopt small{color:var(--mut);font-size:14px}
 .lastline{color:var(--mut);font-size:15px;margin:0 2px 6px;line-height:1.35}
 .lastline.sug{color:var(--ok);font-weight:700} .lastline.rep{color:var(--warn);font-weight:700}
 .fld input::placeholder{color:#59616e;font-weight:600}
@@ -158,7 +161,7 @@ table.tg input{width:100%;height:44px;border-radius:10px;border:1px solid var(--
 const START = [2026, 9, 12];           // Mon Oct 12 2026 (month 0-based)
 const NWEEKS = 12;
 const KEY = 'q4lift.v1';
-const APP_VERSION = '2026.10.12-sets';
+const APP_VERSION = '2026.10.13-move';
 
 const PHASES = w => w===1?{name:'Re-entry',cls:'acc',desc:'Ease back in after vacation and find working weights. Accessories: 2 sets.'}
   : w<=6?{name:'Build',cls:'acc',desc:'RPE 7 rising to 8 by week 6.'+(w>=5?' Flat bench and overhead press are in (if shoulders feel good).':'')}
@@ -243,7 +246,7 @@ const fmt = n=>{const d=new Date(n*864e5);return MON[d.getUTCMonth()]+' '+d.getU
 /* ================= STATE ================= */
 let S;
 try{ S = JSON.parse(localStorage.getItem(KEY)) || {}; }catch(e){ S = {}; }
-S.days = S.days || {}; S.targets = S.targets || {}; S.custom = S.custom || {};  // custom: {A:[{id,name,added}],...}
+S.days = S.days || {}; S.targets = S.targets || {}; S.custom = S.custom || {}; S.sched = S.sched || {}; S.skip = S.skip || {};  // sched: {date:{lift,from?,to?}} overrides; skip: {date:true}  // custom: {A:[{id,name,added}],...}
 let saveT;
 function save(){ clearTimeout(saveT); saveT=setTimeout(()=>localStorage.setItem(KEY, JSON.stringify(S)),150); Sync.touch(); }
 function commit(){ saveNow(); Sync.touch(); }
@@ -283,10 +286,38 @@ function suggestion(ex, sess){
 }
 function e1rm(s){ const w=parseFloat(s.w), r=parseFloat(s.r); if(!w||!r) return 0; const rir = s.rpe!==''&&!isNaN(parseFloat(s.rpe)) ? 10-parseFloat(s.rpe) : 0; return w*(1+(r+rir)/30); }
 
+/* ---- schedule overrides (move / swap / skip) ---- */
+function liftFor(n){ const k=keyOf(n), o=S.sched[k]; return (o && 'lift' in o) ? (o.lift||null) : (SCHEDULE[wdOf(n)]||null); }
+const isSkipped = n=>!!S.skip[keyOf(n)];
+const weekMon = n=>n-((wdOf(n)+6)%7);
+const shortDay = k=>{ const n=fromKey(k); return DOW[wdOf(n)].slice(0,3)+' '+fmt(n); };
+function hasLogs(k, lift){ const d=peek(k); if(!d||!d.ex) return false; const w=weekOf(fromKey(k));
+  const ids=new Set([...workout(lift,w,d.variant||'').map(e=>e.id), ...(S.custom[lift]||[]).map(c=>c.id)]);
+  return Object.entries(d.ex).some(([id,e])=>ids.has(id)&&(e.done||(e.sets||[]).some(s=>s.w!==''||s.r!==''))); }
+function moveWorkout(k1, k2){
+  const n1=fromKey(k1), n2=fromKey(k2), L1=liftFor(n1), L2=liftFor(n2);
+  if(!L1 || k1===k2) return;
+  S.sched[k2]={lift:L1, from:k1};
+  S.sched[k1]= L2 ? {lift:L2, from:k2, swap:true} : {lift:null, to:k2};
+  if(L2) S.sched[k2].swap=true;
+  delete S.skip[k1]; delete S.skip[k2];
+}
+function resetWeek(n){ const mon=weekMon(n); for(let i=0;i<7;i++){ const k=keyOf(mon+i); delete S.sched[k]; delete S.skip[k]; } }
+function weekHasOverrides(n){ const mon=weekMon(n); for(let i=0;i<7;i++){ const k=keyOf(mon+i); if(S.sched[k]||S.skip[k]) return true; } return false; }
+function moveSheet(n){
+  const k=keyOf(n), L=liftFor(n), mon=weekMon(n);
+  let h=`<div class="card movesheet"><b>Move Day ${L} (${shortDay(k)}) to…</b><p class="muted" style="margin:6px 0 8px">Same week only. Picking a lifting day swaps the two workouts.</p>`;
+  for(let i=0;i<7;i++){ const n2=mon+i; if(n2===n) continue; const k2=keyOf(n2), L2=liftFor(n2);
+    const past=n2<todayN();
+    h+=`<button class="moveopt" data-act="moveTo" data-k="${k2}"><span><b>${DOW[wdOf(n2)]}</b> <small>${fmt(n2)}${past?' · past':''}</small><br><small>${L2?DAY_TITLE[L2]:(wdOf(n2)===0?'Rest day':'No lifting')}${BJJ_DAYS.has(wdOf(n2))?' · BJJ':''}</small></span><span class="pill ${L2?'':'acc'}">${L2?'Swap':'Move here'}</span></button>`; }
+  h+=`<div class="btnrow"><button class="btn" data-act="moveCancel">Cancel</button><button class="btn" data-act="skipDay">Skip this workout</button></div></div>`;
+  return h;
+}
+
 const CHECKS = n=>{
-  const wd=wdOf(n), lift=SCHEDULE[wd];
+  const wd=wdOf(n), skipped=isSkipped(n), lift=skipped?null:liftFor(n), sk=liftFor(n);
   const arr=[{id:'creatine',b:'Creatine',s:'3–5 g monohydrate'}];
-  arr.push(lift?{id:'trained',b:'Lifted',s:DAY_TITLE[lift]}:{id:'trained',b:'Rest from lifting',s:wd===0?'Sunday: fully off':'BJJ day — no lifting scheduled'});
+  arr.push(lift?{id:'trained',b:'Lifted',s:DAY_TITLE[lift]}:skipped&&sk?{id:'trained',b:'Rest from lifting',s:`Day ${sk} skipped`}:{id:'trained',b:'Rest from lifting',s:wd===0?'Sunday: fully off':(S.sched[keyOf(n)]&&S.sched[keyOf(n)].to)?'Workout moved to '+shortDay(S.sched[keyOf(n)].to):'No lifting scheduled'});
   if(BJJ_DAYS.has(wd)) arr.push({id:'bjj',b:'BJJ',s:lift?'Roll tonight, 6+ hrs after lifting':'Mat day'});
   arr.push({id:'pt',b:'Home PT / tissue work',s:'Shoulders & upper back first'});
   return arr;
@@ -303,7 +334,8 @@ function render(){
 function renderToday(){
   const n=view.n, k=keyOf(n), wd=wdOf(n), w=weekOf(n), d=peek(k)||{checks:{},protein:0,bw:'',notes:'',ex:{}};
   const inProg = w>=1 && w<=NWEEKS;
-  const lift = inProg ? SCHEDULE[wd] : null;
+  const sched = S.sched[k]||{}, skipped = inProg && isSkipped(n), schedLift = inProg ? liftFor(n) : null;
+  const lift = skipped ? null : schedLift;
   const ph = inProg ? PHASES(w) : null;
   let h = `<header class="top"><div class="datebar">
     <button class="navbtn" data-act="prev" aria-label="Previous day">‹</button>
@@ -319,14 +351,22 @@ function renderToday(){
       :`<div class="big">🏁</div><h2>Q4 block complete</h2><p>Rescan DEXA early January — morning, fasted.</p>`}</div>`;
   } else {
     h += `<div class="card hero"><span class="pill ${ph.cls}">Week ${w} · ${ph.name}</span>
-      <h1 style="margin-top:10px">${lift?DAY_TITLE[lift]:(wd===0?'Rest day':'BJJ only')}</h1>
+      <h1 style="margin-top:10px">${lift?DAY_TITLE[lift]:skipped&&schedLift?DAY_TITLE[schedLift]+' — skipped':(wd===0?'Rest day':BJJ_DAYS.has(wd)?'BJJ only':'No lifting')}</h1>
+      ${lift&&sched.from?`<div class="banner info">🔁 ${sched.swap?'Swapped with':'Moved from'} ${shortDay(sched.from)}.</div>`:''}
       <div class="phase">${ph.desc}</div>
       ${lift==='A'||lift==='C'?`<div class="banner shoulder">⚠️ <b>Shoulder rule:</b> pain (not effort) ends the set. Switch to floor or board press for the rest of the day.</div>`:''}
+      ${lift?`<div class="btnrow"><button class="btn small" data-act="moveOpen">📅 Move workout</button><button class="btn small" data-act="skipDay">Skip</button>${weekHasOverrides(n)?'<button class="btn small" data-act="resetWeek">Reset week</button>':''}</div>`:''}
       ${lift&&BJJ_DAYS.has(wd)?`<div class="banner info">🥋 Lift this morning, roll tonight (6+ hrs apart). Brutal roll or tweak last time? Do the main lift + 2 accessories.</div>`:''}
     </div>`;
   }
 
-  if(lift){
+  if(view.moveOpen && lift) h += moveSheet(n);
+  if(skipped){
+    h += `<div class="card rest"><div class="big">⏭️</div><h2>Day ${schedLift} skipped</h2><p>No lifting logged for this one.</p><div class="btnrow"><button class="btn pri" data-act="unskip">Undo skip</button></div></div>`;
+  } else if(inProg && !lift && sched.to){
+    h += `<div class="card rest"><div class="big">📅</div><h2>Moved to ${shortDay(sched.to)}</h2><p>Day ${S.sched[sched.to]&&S.sched[sched.to].lift||''} is on ${DOW[wdOf(fromKey(sched.to))]} this week.</p>
+      <div class="btnrow"><button class="btn" data-act="goto" data-n="${fromKey(sched.to)}">Go to ${DOW[wdOf(fromKey(sched.to))].slice(0,3)}</button><button class="btn pri" data-act="resetWeek">Undo</button></div></div>`;
+  } else if(lift){
     const variant = (d.variant||'');
     const exs = workout(lift, w, variant);
     const doneCount = exs.filter(e=>(d.ex[e.id]||{}).done).length;
@@ -338,7 +378,7 @@ function renderToday(){
     customFor(lift, k, d).forEach(ex=>{ h += exCard(ex, d, n, w); });
     h += addExForm(lift);
   } else if(inProg){
-    h += `<div class="card rest">${wd===0?`<div class="big">😴</div><h2>Sunday: fully off</h2><p>No lifting, no BJJ. Recover.</p>`
+    h += `<div class="card rest">${weekHasOverrides(n)?'':''}${wd===0?`<div class="big">😴</div><h2>Sunday: fully off</h2><p>No lifting, no BJJ. Recover.</p>`
       :`<div class="big">🥋</div><h2>BJJ tonight</h2><p>No lifting today. Good day for home PT and tissue work.</p>`}</div>`;
   }
 
@@ -487,7 +527,7 @@ function weekSummary(n){
   let streak=0, c=todayN(); const t0=peek(keyOf(c)); if(!(t0&&t0.checks.creatine)) c--;
   while(true){ const x=peek(keyOf(c)); if(x&&x.checks.creatine){streak++;c--;} else break; }
   // lifts done this week
-  let lifts=0, planned=0; for(let i=0;i<7;i++){ const dn=mon+i; if(SCHEDULE[wdOf(dn)] && weekOf(dn)>=1 && weekOf(dn)<=NWEEKS){ planned++; const x=peek(keyOf(dn)); if(x&&x.checks.trained) lifts++; } }
+  let lifts=0, planned=0; for(let i=0;i<7;i++){ const dn=mon+i; if(liftFor(dn) && !isSkipped(dn) && weekOf(dn)>=1 && weekOf(dn)<=NWEEKS){ planned++; const x=peek(keyOf(dn)); if(x&&x.checks.trained) lifts++; } }
   return `<div class="sec">This week · ${fmt(mon)}–${fmt(mon+6)}</div><div class="card">
     <div class="stats"><div class="stat"><b>${streak}🔥</b><small>creatine streak</small></div>
     <div class="stat"><b>${lifts}/${planned}</b><small>lifts done</small></div>
@@ -577,8 +617,8 @@ app.addEventListener('click', e=>{
   const b=e.target.closest('[data-act]'); if(!b) return;
   const act=b.dataset.act, k=keyOf(view.n);
   switch(act){
-    case 'prev': view.n--; view.open={}; view.addEx=false; render(); break;
-    case 'next': view.n++; view.open={}; view.addEx=false; render(); break;
+    case 'prev': view.n--; view.open={}; view.addEx=false; view.moveOpen=false; render(); break;
+    case 'next': view.n++; view.open={}; view.addEx=false; view.moveOpen=false; render(); break;
     case 'today': view.n=todayN(); view.open={}; render(); break;
     case 'goto': view.n=+b.dataset.n; view.open={}; render(); break;
     case 'toggle': { const d=peek(k), id=b.dataset.id; const cur = view.open[id] ?? !((d&&d.ex[id])||{}).done;
@@ -596,14 +636,25 @@ app.addEventListener('click', e=>{
     case 'prot': { const d=D(k); d.protein=Math.max(0,(d.protein||0)+(+b.dataset.v)); save(); render(); break; }
     case 'variant': { const d=D(k); d.variant=b.dataset.v; save(); render(); break; }
     case 'hist': view.histLift=b.dataset.id; render(); break;
+    case 'moveOpen': view.moveOpen=true; render(); break;
+    case 'moveCancel': view.moveOpen=false; render(); break;
+    case 'moveTo': { const k2=b.dataset.k, L1=liftFor(view.n), L2=liftFor(fromKey(k2));
+      const warn=[]; if(hasLogs(k, L1)) warn.push(`You already logged some Day ${L1} sets on ${shortDay(k)}; they stay on that date.`);
+      if(L2 && hasLogs(k2, L2)) warn.push(`Day ${L2} already has logs on ${shortDay(k2)}.`);
+      const q = L2 ? `Swap Day ${L1} (${shortDay(k)}) with Day ${L2} (${shortDay(k2)})?` : `Move Day ${L1} to ${shortDay(k2)}?`;
+      if(!confirm([q,...warn].join('\n\n'))) break;
+      moveWorkout(k, k2); view.moveOpen=false; commit(); view.n=fromKey(k2); view.open={}; render(); window.scrollTo(0,0); break; }
+    case 'skipDay': if(confirm(`Skip Day ${liftFor(view.n)} on ${shortDay(k)}?`)){ S.skip[k]=true; view.moveOpen=false; commit(); render(); } break;
+    case 'unskip': delete S.skip[k]; commit(); render(); break;
+    case 'resetWeek': if(confirm('Put this week back to the normal schedule (Mon B, Tue A, Thu C, Sat D)? Logged sets are kept.')){ resetWeek(view.n); view.moveOpen=false; commit(); render(); } break;
     case 'addExOpen': view.addEx=true; render(); setTimeout(()=>{ const i=document.getElementById('newEx'); if(i) i.focus(); },50); break;
     case 'addExCancel': view.addEx=false; render(); break;
     case 'addExSave': { const name=(document.getElementById('newEx').value||'').trim().replace(/\s+/g,' ').slice(0,60); if(!name) break;
-      const lift=SCHEDULE[wdOf(view.n)]; if(!lift) break; const id=slug(name); if(id==='x-') break;
+      const lift=liftFor(view.n); if(!lift) break; const id=slug(name); if(id==='x-') break;
       const list=S.custom[lift]=S.custom[lift]||[]; const ex=list.find(c=>c.id===id);
       if(!ex) list.push({id, name, added:k}); else if(ex.added>k) ex.added=k;
       view.addEx=false; view.open[id]=true; commit(); render(); break; }
-    case 'rmEx': { const id=b.dataset.id, lift=SCHEDULE[wdOf(view.n)];
+    case 'rmEx': { const id=b.dataset.id, lift=liftFor(view.n);
       if(!confirm(`Stop showing "${b.dataset.name}" on Day ${lift}? Past logs stay in History.`)) break;
       S.custom[lift]=(S.custom[lift]||[]).filter(c=>c.id!==id);
       const d=peek(k); if(d&&d.ex[id]&&!(d.ex[id].sets||[]).some(s=>s.w!==''||s.r!=='')) delete d.ex[id];
@@ -701,10 +752,10 @@ const Sync = (()=>{
     const daily=[], sets=[];
     dates.forEach(k=>{
       const d=S.days[k]||{}, n=fromKey(k), wd=wdOf(n), w=weekOf(n), inProg=w>=1&&w<=NWEEKS;
-      const lift=inProg?SCHEDULE[wd]:null, c=d.checks||{}, ex=d.ex||{};
+      const sk=inProg&&isSkipped(n), so=S.sched[k]||{}, lift=inProg&&!sk?liftFor(n):null, c=d.checks||{}, ex=d.ex||{};
       const exs=lift?workout(lift,w,d.variant||''):[];
       const doneN=Object.keys(ex).filter(id=>ex[id]&&ex[id].done).length;
-      daily.push([k, inProg?w:'', DOW[wd], lift?DAY_TITLE[lift]:(wd===0?'Rest (Sunday)':'No lifting'),
+      daily.push([k, inProg?w:'', DOW[wd], lift?DAY_TITLE[lift]+(so.from?` (${so.swap?'swapped with':'moved from'} ${so.from})`:''):sk?`Day ${liftFor(n)} skipped`:so.to?`No lifting (Day moved to ${so.to})`:(wd===0?'Rest (Sunday)':'No lifting'),
         yes(c.creatine), yes(c.trained), BJJ_DAYS.has(wd)?yes(c.bjj):'', d.protein||0, yes(c.pt), num(d.bw),
         lift?`${doneN} of ${exs.length}`:(doneN?`${doneN}`:''), d.notes||'']);
       Object.keys(ex).forEach(id=>{
