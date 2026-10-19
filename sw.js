@@ -1,5 +1,5 @@
 // Bump VERSION whenever index.html changes so phones pick up the update.
-const VERSION = 'q4lift-v4';
+const VERSION = 'q4lift-v5';
 const ASSETS = ['./', './index.html', './manifest.json',
   './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'];
 
